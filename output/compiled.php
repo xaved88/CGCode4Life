@@ -135,7 +135,6 @@ class MainGame extends AbstractGame
     protected function turnLogic()
     {
         $this->initMyRobot();
-        $this->initSamples();
 
         $output = $this->whatMyRobotDo();
 
@@ -165,202 +164,273 @@ class MainGame extends AbstractGame
         }
     }
 
-    private function initSamples()
-    {
-
-    }
-
     /**
      * @return string
-     * @throws Exception
      */
     private function whatMyRobotDo()
     {
         $robot = $this->myRobot;
 
-        // AT SAMPLES AND NOT FULL - PICK THEM UP
-        if ($robot->isAt(Samples::NAME) && $robot->canCarryMoreSamples()) {
-            return $robot->makeTakeSampleCommand();
-        }
-
-        // NO SAMPLES, NO GOOD STUFF IN CLOUD
-        if (!$robot->hasSamples() && !$this->samples->isGoodStuffInCloud()) {
-
-            return $robot->makeGoCommand(Samples::NAME);
-        }
-
-        // AT THE DIAGNOSIS
-        if ($robot->isAt(Diagnosis::NAME)) {
-            // GOOD STUFF TO PICK UP
-            if ($robot->canCarryMoreSamples() && $this->samples->isGoodStuffInCloud()) {
-                $sample = $this->samples->getBestSampleInCloud();
-
-                return $robot->makeConnectCommand($sample->id);
-            }
-
-            // HAS THINGS TO DIAGNOSE
-            if ($robot->hasUndiagnosedSamples()) {
-                return $robot->makeDiagnoseSampleCommand();
-            }
-
-            // HAS CRAP TO DROP OFF
-            if ($robot->hasCrapSamples()) {
-                return $robot->makeDropCrapSampleCommand();
-            }
-        }
-
-        // GO TO THE DIAGNOSIS IF NOT THERE AND DOESNT HAVE GOOD DIAGNOSED SAMPLES
-        if (!$robot->isAt(Diagnosis::NAME) && !$robot->hasGoodDiagnosedSamples()) {
-            return $robot->makeGoCommand(Diagnosis::NAME);
-        }
-
-        // IF ROBOT HAS NO COMPLETE SAMPLES, GO TO MOLECULES
-        if (!$robot->hasCompleteSamples() && !$robot->isAt(Molecules::NAME)) {
-
-            return $robot->makeGoCommand(Molecules::NAME);
-        }
-
-
-        // IF ROBOT IS AT MOLECULES, DETERMINE BEST SAMPLE TO COMPLETE AND PROGRESS ON IT
-        if ($robot->isAt(Molecules::NAME) && !$robot->hasCompleteSamples()) {
-            $progress = $robot->getSampleProgress();
-
-            return $robot->makeConnectCommand($progress);
-        }
-
-
-        // IF ROBOT HAS A COMPLETE SAMPLE, GO TO LAB
-        if (!$robot->isAt(Laboratory::NAME) && $robot->hasCompleteSamples()) {
-
-            return $robot->makeGoCommand(Laboratory::NAME);
-        }
-
-        // IF ROBOT IS AT LAB AND HAS COMPLETE SAMPLE, FINISH IT
-        if ($robot->isAt(Laboratory::NAME) && $robot->hasCompleteSamples()) {
-            $completedSample = $robot->getCompleteSample();
-
-            return $robot->makeConnectCommand($completedSample->id);
-        }
-
-        throw new Exception('Got nothing to do!');
+        return $robot->getAction($this->samples, $this->molecules);
     }
 
 }
 
 
-class InputManager
+class Robot
 {
-    /**
-     * @deprecated
-     * @return array
-     */
-    public function getProjectData()
-    {
-        fscanf(STDIN, "%d", $projectCount);
-        for ($i = 0; $i < $projectCount; $i++) {
-            $data = fscanf(STDIN, "%d %d %d %d %d");
-            list($a, $b, $c, $d, $e) = $data;
-        }
-
-        return [];
-    }
+    const MAX_SAMPLES = 3;
 
     /**
-     * @return mixed[]
+     * @var int
      */
-    public function getTurnData()
-    {
-        $turnData           = [];
-        $turnData['robots'] = [];
-        for ($i = 0; $i < 2; $i++) {
-            $data                 = fscanf(STDIN, "%s %d %d %d %d %d %d %d %d %d %d %d %d");
-            $turnData['robots'][] = new Robot($data, $i);
-        }
+    public $ownerId;
 
-        list($a, $b, $c, $d, $e) = fscanf(STDIN, "%d %d %d %d %d");
-        $turnData['molStorage'] = new MolBag($a, $b, $c, $d, $e);
-
-        fscanf(STDIN, "%d", $turnData['sampleCount']);
-
-        $turnData['samples'] = [];
-
-        for ($i = 0; $i < $turnData['sampleCount']; $i++) {
-            $data                  = fscanf(STDIN, "%d %d %d %s %d %d %d %d %d %d");
-            $turnData['samples'][] = new Sample($data);
-        }
-
-        return $turnData;
-    }
-}
-
-class GameOutput{
     /**
      * @var string
      */
-    private $outputString = '';
+    public $target;
 
     /**
-     * @param string $data
+     * @var int
+     * @deprecated
      */
-    public function append($data){
-        $this->outputString .= $data;
-    }
+    public $eta;
 
-    public function execute(){
-        echo $this->outputString . PHP_EOL;
-        $this->outputString = '';
-    }
-}
-
-abstract class AbstractModule
-{
-
-}
-
-class Diagnosis extends AbstractModule
-{
-    const NAME = "DIAGNOSIS";
-
-}
-
-class Laboratory extends AbstractModule
-{
-    const NAME = "LABORATORY";
-
-}
-
-class Molecules extends AbstractModule
-{
-    const NAME = "MOLECULES";
-
-    const TYPE_A = "A";
-    const TYPE_B = "B";
-    const TYPE_C = "C";
-    const TYPE_D = "D";
-    const TYPE_E = "E";
-
+    /**
+     * @var int
+     */
+    public $score;
 
     /**
      * @var MolBag
      */
     public $storage;
 
-    public function __construct()
-    {
-        $this->storage = new MolBag();
-    }
+    /**
+     * @var MolBag
+     */
+    public $expertise;
 
-    public function setStorageValues($a, $b, $c, $d, $e)
+    /**
+     * @var Sample[]
+     */
+    public $samples = [];
+
+    /**
+     * @var AbstractBehaviourState
+     */
+    public $behaviourState;
+
+    /**
+     * @param array $data
+     * @param int   $ownerId
+     */
+    public function __construct($data, $ownerId)
     {
-        $this->storage->updateAll($a, $b, $c, $d, $e);
+        list(
+            $target,
+            $eta,
+            $score,
+            $storageA,
+            $storageB,
+            $storageC,
+            $storageD,
+            $storageE,
+            $expA,
+            $expB,
+            $expC,
+            $expD,
+            $expE
+            ) = $data;
+
+        $this->ownerId   = $ownerId;
+        $this->target    = $target;
+        $this->eta       = $eta;
+        $this->score     = $score;
+        $this->storage   = new MolBag($storageA, $storageB, $storageC, $storageD, $storageE);
+        $this->expertise = new MolBag($expA, $expB, $expC, $expD, $expE);
     }
 
     /**
-     * @param $molBag
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return null|string
      */
-    public function setStorage($molBag)
+
+    public function getAction($samples, $molecules)
     {
-        $this->storage = $molBag;
+        $this->behaviourState = BehaviourFactory::makeBehaviourState($this, $samples, $molecules);
+        $action               = $this->behaviourState->getAction();
+
+        if (null === $action) {
+            $this->behaviourState = BehaviourFactory::makeDefaultBehaviourState($this, $samples, $molecules);
+            $action               = $this->behaviourState->getAction();
+        }
+
+        return $action;
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasSamples()
+    {
+        return !empty($this->samples);
+    }
+
+    public function canCarryMoreSamples()
+    {
+        return count($this->samples) < static::MAX_SAMPLES;
+    }
+
+    public function hasCompleteSamples()
+    {
+        return null !== $this->getCompleteSample();
+    }
+
+    public function hasUndiagnosedSamples()
+    {
+        foreach ($this->samples as $sample) {
+            if (!$sample->isDiagnosed()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function hasGoodDiagnosedSamples()
+    {
+        foreach ($this->samples as $sample) {
+            if ($sample->isDiagnosed() && $sample->isGood()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function hasCrapSamples()
+    {
+        return null !== $this->getCrapSample();
+    }
+
+    /**
+     * @return null|Sample
+     */
+    public function getCrapSample()
+    {
+        foreach ($this->samples as $sample) {
+            if ($sample->isDiagnosed() && !$sample->isGood()) {
+                return $sample;
+            }
+        }
+
+        return null;
+    }
+
+    public function getCompleteSample()
+    {
+        $completeSample = null;
+        if (!empty($this->samples)) {
+            foreach ($this->samples as $sample) {
+                if ($this->storage->contains($sample->cost)) {
+                    $completeSample = $sample;
+                    break;
+                }
+            }
+        }
+
+        return $completeSample;
+    }
+
+    public function getSampleProgress()
+    {
+        $sample = reset($this->samples);
+
+        $missingCost = $this->storage->getMissing($sample->cost);
+        $missingIds  = array_flip($missingCost);
+
+        return reset($missingIds);
+    }
+
+    /**
+     * @param string $location
+     *
+     * @return bool
+     */
+    public function isAt($location)
+    {
+        return $this->target === $location;
+    }
+
+
+    public function makeGoCommand($location)
+    {
+        return "GOTO " . $location;
+    }
+
+    public function makeConnectCommand($var)
+    {
+        return "CONNECT " . $var;
+    }
+}
+
+class MolBag
+{
+    /**
+     * @var array (moleculeType => amount)
+     */
+    public $mol;
+
+    public function __construct($a = 0, $b = 0, $c = 0, $d = 0, $e = 0)
+    {
+        $this->updateAll($a, $b, $c, $d, $e);
+    }
+
+    public function updateAll($a, $b, $c, $d, $e)
+    {
+        $this->mol = [
+            Molecules::TYPE_A => $a,
+            Molecules::TYPE_B => $b,
+            Molecules::TYPE_C => $c,
+            Molecules::TYPE_D => $d,
+            Molecules::TYPE_E => $e,
+        ];
+    }
+
+    public function getTotal()
+    {
+        return array_sum($this->mol);
+    }
+
+    /**
+     * @param MolBag $molBag
+     *
+     * @return bool
+     */
+    public function contains($molBag)
+    {
+        foreach ($this->mol as $key => $value) {
+            if ($molBag->mol[$key] > $value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public function getMissing($molBag){
+        $missing = [];
+        foreach ($this->mol as $key => $value) {
+            if ($molBag->mol[$key] > $value) {
+                $missing[$key] = $molBag->mol[$key] - $value;
+            }
+        }
+
+        return $missing;
     }
 }
 
@@ -423,250 +493,234 @@ class Samples extends AbstractModule
     }
 }
 
-class MolBag
+class Molecules extends AbstractModule
 {
-    /**
-     * @var array (moleculeType => amount)
-     */
-    public $mol;
+    const NAME = "MOLECULES";
 
-    public function __construct($a = 0, $b = 0, $c = 0, $d = 0, $e = 0)
-    {
-        $this->updateAll($a, $b, $c, $d, $e);
-    }
+    const TYPE_A = "A";
+    const TYPE_B = "B";
+    const TYPE_C = "C";
+    const TYPE_D = "D";
+    const TYPE_E = "E";
 
-    public function updateAll($a, $b, $c, $d, $e)
-    {
-        $this->mol = [
-            Molecules::TYPE_A => $a,
-            Molecules::TYPE_B => $b,
-            Molecules::TYPE_C => $c,
-            Molecules::TYPE_D => $d,
-            Molecules::TYPE_E => $e,
-        ];
-    }
-
-    public function getTotal()
-    {
-        return array_sum($this->mol);
-    }
-
-    /**
-     * @param MolBag $molBag
-     *
-     * @return bool
-     */
-    public function contains($molBag)
-    {
-        foreach ($this->mol as $key => $value) {
-            if ($molBag->mol[$key] > $value) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    public function getMissing($molBag){
-        $missing = [];
-        foreach ($this->mol as $key => $value) {
-            if ($molBag->mol[$key] > $value) {
-                $missing[$key] = $molBag->mol[$key] - $value;
-            }
-        }
-
-        return $missing;
-    }
-}
-
-class Robot
-{
-    const MAX_SAMPLES = 3;
-
-    /**
-     * @var int
-     */
-    public $ownerId;
-
-    /**
-     * @var string
-     */
-    public $target;
-
-    /**
-     * @var int
-     * @deprecated
-     */
-    public $eta;
-
-    /**
-     * @var int
-     */
-    public $score;
 
     /**
      * @var MolBag
      */
     public $storage;
 
-    /**
-     * @var MolBag
-     */
-    public $expertise;
-
-    /**
-     * @var Sample[]
-     */
-    public $samples = [];
-
-
-    private $cachedCompleteSample = false;
-
-    /**
-     * @param array $data
-     * @param int   $ownerId
-     */
-    public function __construct($data, $ownerId)
+    public function __construct()
     {
-        list(
-            $target,
-            $eta,
-            $score,
-            $storageA,
-            $storageB,
-            $storageC,
-            $storageD,
-            $storageE,
-            $expA,
-            $expB,
-            $expC,
-            $expD,
-            $expE
-            ) = $data;
-
-        $this->ownerId   = $ownerId;
-        $this->target    = $target;
-        $this->eta       = $eta;
-        $this->score     = $score;
-        $this->storage   = new MolBag($storageA, $storageB, $storageC, $storageD, $storageE);
-        $this->expertise = new MolBag($expA, $expB, $expC, $expD, $expE);
+        $this->storage = new MolBag();
     }
 
+    public function setStorageValues($a, $b, $c, $d, $e)
+    {
+        $this->storage->updateAll($a, $b, $c, $d, $e);
+    }
 
     /**
-     * @return bool
+     * @param $molBag
      */
-    public function hasSamples()
+    public function setStorage($molBag)
     {
-        return !empty($this->samples);
+        $this->storage = $molBag;
+    }
+}
+
+class Laboratory extends AbstractModule
+{
+    const NAME = "LABORATORY";
+
+}
+
+class Diagnosis extends AbstractModule
+{
+    const NAME = "DIAGNOSIS";
+
+}
+
+abstract class AbstractModule
+{
+
+}
+
+class BehaviourFactory
+{
+    const StateObjectSuffix = 'BehaviourState';
+    const DEFAULT_BEHAVIOUR = 'Move';
+
+    /**
+     * @param Robot     $robot
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return AbstractBehaviourState
+     */
+    static function makeBehaviourState($robot, $samples, $molecules)
+    {
+        $location = ucfirst($robot->target);
+
+        return static::makeBehaviourStateFromCommand($location, $robot, $samples, $molecules);
     }
 
-    public function canCarryMoreSamples()
+    /**
+     * @param Robot     $robot
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return AbstractBehaviourState
+     */
+    static function makeDefaultBehaviourState($robot, $samples, $molecules)
     {
-        return count($this->samples) < static::MAX_SAMPLES;
+        return static::makeBehaviourStateFromCommand(static::DEFAULT_BEHAVIOUR, $robot, $samples, $molecules);
     }
 
-    public function hasCompleteSamples()
+    /**
+     * @param string    $commandName
+     * @param Robot     $robot
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return AbstractBehaviourState
+     * @throws Exception
+     */
+    static function makeBehaviourStateFromCommand($commandName, $robot, $samples, $molecules)
     {
-        return null !== $this->getCompleteSample();
-    }
-
-    public function hasUndiagnosedSamples()
-    {
-        foreach ($this->samples as $sample) {
-            if (!$sample->isDiagnosed()) {
-                return true;
-            }
+        $className = $commandName . static::StateObjectSuffix;
+        if (class_exists($className)) {
+            return new $className($robot, $samples, $molecules);
+        } elseif($commandName !== static::DEFAULT_BEHAVIOUR) {
+            return static::makeDefaultBehaviourState($robot, $samples, $molecules);
+        } else {
+            throw new Exception(sprintf('Undefined behaviour state for %s', $commandName));
         }
 
-        return false;
     }
+}
 
-    public function hasGoodDiagnosedSamples()
-    {
-        foreach ($this->samples as $sample) {
-            if ($sample->isDiagnosed() && $sample->isGood()) {
-                return true;
-            }
-        }
-        return false;
-    }
+abstract class AbstractBehaviourState
+{
 
-    public function hasCrapSamples()
+    /**
+     * @var Robot - yes I know it's circular dependency, so sue me...
+     */
+    public $robot;
+
+    /**
+     * @var Samples
+     */
+    public $samples;
+
+    /**
+     * @var Molecules
+     */
+    public $molecules;
+
+    /**
+     * @param Robot     $robot
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return null|AbstractBehaviourState
+     */
+    public function __construct($robot, $samples, $molecules)
     {
-        return (bool)$this->getCrapSample();
+        $this->robot     = $robot;
+        $this->samples   = $samples;
+        $this->molecules = $molecules;
     }
 
     /**
-     * @return null|Sample
+     * If it's a location behavior state, it will determine what the robot should do while it is at the location.
+     * If there isn't a good usable action to do there, it should return null, and then a new acction state for moving
+     * on should be created by the robot.
+     *
+     * @return string|null
      */
-    public function getCrapSample()
+    abstract public function getAction();
+}
+
+class GameOutput{
+    /**
+     * @var string
+     */
+    private $outputString = '';
+
+    /**
+     * @param string $data
+     */
+    public function append($data){
+        $this->outputString .= $data;
+    }
+
+    public function execute(){
+        echo $this->outputString . PHP_EOL;
+        $this->outputString = '';
+    }
+}
+
+class InputManager
+{
+    /**
+     * @deprecated
+     * @return array
+     */
+    public function getProjectData()
     {
-        foreach ($this->samples as $sample) {
-            if ($sample->isDiagnosed() && !$sample->isGood()) {
-                return $sample;
-            }
+        fscanf(STDIN, "%d", $projectCount);
+        for ($i = 0; $i < $projectCount; $i++) {
+            $data = fscanf(STDIN, "%d %d %d %d %d");
+            list($a, $b, $c, $d, $e) = $data;
+        }
+
+        return [];
+    }
+
+    /**
+     * @return mixed[]
+     */
+    public function getTurnData()
+    {
+        $turnData           = [];
+        $turnData['robots'] = [];
+        for ($i = 0; $i < 2; $i++) {
+            $data                 = fscanf(STDIN, "%s %d %d %d %d %d %d %d %d %d %d %d %d");
+            $turnData['robots'][] = new Robot($data, $i);
+        }
+
+        list($a, $b, $c, $d, $e) = fscanf(STDIN, "%d %d %d %d %d");
+        $turnData['molStorage'] = new MolBag($a, $b, $c, $d, $e);
+
+        fscanf(STDIN, "%d", $turnData['sampleCount']);
+
+        $turnData['samples'] = [];
+
+        for ($i = 0; $i < $turnData['sampleCount']; $i++) {
+            $data                  = fscanf(STDIN, "%d %d %d %s %d %d %d %d %d %d");
+            $turnData['samples'][] = new Sample($data);
+        }
+
+        return $turnData;
+    }
+}
+
+class SamplesBehaviourState extends AbstractBehaviourState
+{
+    public function getAction()
+    {
+        if ($this->robot->canCarryMoreSamples()) {
+            return $this->makeTakeSampleCommand();
         }
 
         return null;
     }
 
-    public function getCompleteSample()
-    {
-        if ($this->cachedCompleteSample !== false) {
-            return $this->cachedCompleteSample;
-        }
 
-        $completeSample = null;
-        if (!empty($this->samples)) {
-            foreach ($this->samples as $sample) {
-                if ($this->storage->contains($sample->cost)) {
-                    $completeSample = $sample;
-                    break;
-                }
-            }
-        }
-
-        $this->cachedCompleteSample = $completeSample;
-
-        return $completeSample;
-    }
-
-    /**
-     * @param string $location
-     *
-     * @return bool
-     */
-    public function isAt($location)
-    {
-        return $this->target === $location;
-    }
-
-    public function getSampleProgress()
-    {
-        $sample = reset($this->samples);
-
-        $missingCost = $this->storage->getMissing($sample->cost);
-        $missingIds  = array_flip($missingCost);
-
-        return reset($missingIds);
-    }
-
-
-    public function makeGoCommand($location)
-    {
-        return "GOTO " . $location;
-    }
-
-    public function makeConnectCommand($var)
-    {
-        return "CONNECT " . $var;
-    }
-
-    public function makeTakeSampleCommand()
+    private function makeTakeSampleCommand()
     {
         $ownedRanks = [];
-        foreach ($this->samples as $sample) {
+        foreach ($this->robot->samples as $sample) {
             $ownedRanks[] = $sample->rank;
         }
 
@@ -679,21 +733,104 @@ class Robot
             $getRank = 2;
         }
 
-        return $this->makeConnectCommand($getRank);
+        return $this->robot->makeConnectCommand($getRank);
+    }
+}
+
+class MoveBehaviourState extends AbstractBehaviourState
+{
+    public function getAction()
+    {
+        // NO SAMPLES, NO GOOD STUFF IN CLOUD
+        if (!$this->robot->hasSamples() && !$this->samples->isGoodStuffInCloud()) {
+
+            return $this->robot->makeGoCommand(Samples::NAME);
+        }
+
+        // GO TO THE DIAGNOSIS IF NOT THERE AND DOESNT HAVE GOOD DIAGNOSED SAMPLES
+        if (!$this->robot->isAt(Diagnosis::NAME) && !$this->robot->hasGoodDiagnosedSamples()) {
+            return $this->robot->makeGoCommand(Diagnosis::NAME);
+        }
+
+        // IF ROBOT HAS NO COMPLETE SAMPLES, GO TO MOLECULES
+        if (!$this->robot->hasCompleteSamples() && !$this->robot->isAt(Molecules::NAME)) {
+
+            return $this->robot->makeGoCommand(Molecules::NAME);
+        }
+
+        // IF ROBOT HAS A COMPLETE SAMPLE, GO TO LAB
+        if (!$this->robot->isAt(Laboratory::NAME) && $this->robot->hasCompleteSamples()) {
+
+            return $this->robot->makeGoCommand(Laboratory::NAME);
+        }
+
+        throw new Exception('wtf this default state cant find anything to do');
+    }
+}
+
+class MoleculesBehaviourState extends AbstractBehaviourState
+{
+    public function getAction()
+    {
+        if (!$this->robot->hasCompleteSamples()) {
+            $progress = $this->robot->getSampleProgress();
+
+            return $this->robot->makeConnectCommand($progress);
+        }
+
+        return null;
+    }
+}
+
+class LaboratoryBehaviourState extends AbstractBehaviourState
+{
+    public function getAction()
+    {
+        if ($this->robot->hasCompleteSamples()) {
+            $completedSample = $this->robot->getCompleteSample();
+
+            return $this->robot->makeConnectCommand($completedSample->id);
+        }
+
+        return null;
+    }
+}
+
+class DiagnosisBehaviourState extends AbstractBehaviourState
+{
+    public function getAction()
+    {
+        if ($this->robot->canCarryMoreSamples() && $this->samples->isGoodStuffInCloud()) {
+            $sample = $this->samples->getBestSampleInCloud();
+
+            return $this->robot->makeConnectCommand($sample->id);
+        }
+
+        // HAS THINGS TO DIAGNOSE
+        if ($this->robot->hasUndiagnosedSamples()) {
+            return $this->makeDiagnoseSampleCommand();
+        }
+
+        // HAS CRAP TO DROP OFF
+        if ($this->robot->hasCrapSamples()) {
+            return $this->makeDropCrapSampleCommand();
+        }
+
+        return null;
     }
 
-    public function makeDropCrapSampleCommand()
+    private function makeDropCrapSampleCommand()
     {
-        $sample = $this->getCrapSample();
+        $sample = $this->robot->getCrapSample();
 
-        return $this->makeConnectCommand($sample->id);
+        return $this->robot->makeConnectCommand($sample->id);
     }
 
-    public function makeDiagnoseSampleCommand()
+    private function makeDiagnoseSampleCommand()
     {
-        foreach ($this->samples as $sample) {
+        foreach ($this->robot->samples as $sample) {
             if (!$sample->isDiagnosed()) {
-                return $this->makeConnectCommand($sample->id);
+                return $this->robot->makeConnectCommand($sample->id);
             }
         }
 

@@ -66,7 +66,6 @@ class MainGame extends AbstractGame
     protected function turnLogic()
     {
         $this->initMyRobot();
-        $this->initSamples();
 
         $output = $this->whatMyRobotDo();
 
@@ -96,84 +95,14 @@ class MainGame extends AbstractGame
         }
     }
 
-    private function initSamples()
-    {
-
-    }
-
     /**
      * @return string
-     * @throws Exception
      */
     private function whatMyRobotDo()
     {
         $robot = $this->myRobot;
 
-        // AT SAMPLES AND NOT FULL - PICK THEM UP
-        if ($robot->isAt(Samples::NAME) && $robot->canCarryMoreSamples()) {
-            return $robot->makeTakeSampleCommand();
-        }
-
-        // NO SAMPLES, NO GOOD STUFF IN CLOUD
-        if (!$robot->hasSamples() && !$this->samples->isGoodStuffInCloud()) {
-
-            return $robot->makeGoCommand(Samples::NAME);
-        }
-
-        // AT THE DIAGNOSIS
-        if ($robot->isAt(Diagnosis::NAME)) {
-            // GOOD STUFF TO PICK UP
-            if ($robot->canCarryMoreSamples() && $this->samples->isGoodStuffInCloud()) {
-                $sample = $this->samples->getBestSampleInCloud();
-
-                return $robot->makeConnectCommand($sample->id);
-            }
-
-            // HAS THINGS TO DIAGNOSE
-            if ($robot->hasUndiagnosedSamples()) {
-                return $robot->makeDiagnoseSampleCommand();
-            }
-
-            // HAS CRAP TO DROP OFF
-            if ($robot->hasCrapSamples()) {
-                return $robot->makeDropCrapSampleCommand();
-            }
-        }
-
-        // GO TO THE DIAGNOSIS IF NOT THERE AND DOESNT HAVE GOOD DIAGNOSED SAMPLES
-        if (!$robot->isAt(Diagnosis::NAME) && !$robot->hasGoodDiagnosedSamples()) {
-            return $robot->makeGoCommand(Diagnosis::NAME);
-        }
-
-        // IF ROBOT HAS NO COMPLETE SAMPLES, GO TO MOLECULES
-        if (!$robot->hasCompleteSamples() && !$robot->isAt(Molecules::NAME)) {
-
-            return $robot->makeGoCommand(Molecules::NAME);
-        }
-
-
-        // IF ROBOT IS AT MOLECULES, DETERMINE BEST SAMPLE TO COMPLETE AND PROGRESS ON IT
-        if ($robot->isAt(Molecules::NAME) && !$robot->hasCompleteSamples()) {
-            $progress = $robot->getSampleProgress();
-
-            return $robot->makeConnectCommand($progress);
-        }
-
-
-        // IF ROBOT HAS A COMPLETE SAMPLE, GO TO LAB
-        if (!$robot->isAt(Laboratory::NAME) && $robot->hasCompleteSamples()) {
-
-            return $robot->makeGoCommand(Laboratory::NAME);
-        }
-
-        // IF ROBOT IS AT LAB AND HAS COMPLETE SAMPLE, FINISH IT
-        if ($robot->isAt(Laboratory::NAME) && $robot->hasCompleteSamples()) {
-            $completedSample = $robot->getCompleteSample();
-
-            return $robot->makeConnectCommand($completedSample->id);
-        }
-
-        throw new Exception('Got nothing to do!');
+        return $robot->getAction($this->samples, $this->molecules);
     }
 
 }

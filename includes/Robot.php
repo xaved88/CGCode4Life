@@ -40,8 +40,10 @@ class Robot
      */
     public $samples = [];
 
-
-    private $cachedCompleteSample = false;
+    /**
+     * @var AbstractBehaviourState
+     */
+    public $behaviourState;
 
     /**
      * @param array $data
@@ -73,6 +75,25 @@ class Robot
         $this->expertise = new MolBag($expA, $expB, $expC, $expD, $expE);
     }
 
+    /**
+     * @param Samples   $samples
+     * @param Molecules $molecules
+     *
+     * @return null|string
+     */
+
+    public function getAction($samples, $molecules)
+    {
+        $this->behaviourState = BehaviourFactory::makeBehaviourState($this, $samples, $molecules);
+        $action               = $this->behaviourState->getAction();
+
+        if (null === $action) {
+            $this->behaviourState = BehaviourFactory::makeDefaultBehaviourState($this, $samples, $molecules);
+            $action               = $this->behaviourState->getAction();
+        }
+
+        return $action;
+    }
 
     /**
      * @return bool
@@ -110,12 +131,13 @@ class Robot
                 return true;
             }
         }
+
         return false;
     }
 
     public function hasCrapSamples()
     {
-        return (bool)$this->getCrapSample();
+        return null !== $this->getCrapSample();
     }
 
     /**
@@ -134,10 +156,6 @@ class Robot
 
     public function getCompleteSample()
     {
-        if ($this->cachedCompleteSample !== false) {
-            return $this->cachedCompleteSample;
-        }
-
         $completeSample = null;
         if (!empty($this->samples)) {
             foreach ($this->samples as $sample) {
@@ -148,19 +166,7 @@ class Robot
             }
         }
 
-        $this->cachedCompleteSample = $completeSample;
-
         return $completeSample;
-    }
-
-    /**
-     * @param string $location
-     *
-     * @return bool
-     */
-    public function isAt($location)
-    {
-        return $this->target === $location;
     }
 
     public function getSampleProgress()
@@ -173,6 +179,16 @@ class Robot
         return reset($missingIds);
     }
 
+    /**
+     * @param string $location
+     *
+     * @return bool
+     */
+    public function isAt($location)
+    {
+        return $this->target === $location;
+    }
+
 
     public function makeGoCommand($location)
     {
@@ -182,42 +198,5 @@ class Robot
     public function makeConnectCommand($var)
     {
         return "CONNECT " . $var;
-    }
-
-    public function makeTakeSampleCommand()
-    {
-        $ownedRanks = [];
-        foreach ($this->samples as $sample) {
-            $ownedRanks[] = $sample->rank;
-        }
-
-        $hasRankThree = in_array(3, $ownedRanks);
-        $hasRankTwo   = in_array(2, $ownedRanks);
-
-        if (!$hasRankThree || $hasRankTwo) {
-            $getRank = 3;
-        } else {
-            $getRank = 2;
-        }
-
-        return $this->makeConnectCommand($getRank);
-    }
-
-    public function makeDropCrapSampleCommand()
-    {
-        $sample = $this->getCrapSample();
-
-        return $this->makeConnectCommand($sample->id);
-    }
-
-    public function makeDiagnoseSampleCommand()
-    {
-        foreach ($this->samples as $sample) {
-            if (!$sample->isDiagnosed()) {
-                return $this->makeConnectCommand($sample->id);
-            }
-        }
-
-        throw new Exception('No samples to diagnose!');
     }
 }
